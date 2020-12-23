@@ -11,7 +11,7 @@ terraform {
 
 provider "google" {
 
-	credentials = file("./pinkyhorse-6deac101c77a.json")
+	credentials = file("./pinkyhorse-b01e820cfdb1.json")
 	project = "pinkyhorse"
 	region = "us-central1"
 	zone = "us-central1-c"
@@ -46,15 +46,19 @@ provider "kubernetes" {
 	load_config_file = false
 	host = "https://${google_container_cluster.primary.endpoint}"
 	token = "${data.google_client_config.provider.access_token}"
-	cluster_ca_certificate = base64decode(google_container_cluster.primary.master_auth[0].cluster_ca_certificate
-  )
+	cluster_ca_certificate = base64decode(google_container_cluster.primary.master_auth[0].cluster_ca_certificate)
+  client_key = base64decode(google_container_cluster.primary.master_auth[0].client_key)
+  client_certificate = base64decode(google_container_cluster.primary.master_auth[0].client_certificate)
+
 }
 
 resource "kubernetes_pod" "redis" {
 	metadata {
 		name = "redis"
+		labels = {
+			redis = "redis"
+		}
 	}
-
 	spec {
 		container {
 			image = "redis"
@@ -66,14 +70,81 @@ resource "kubernetes_pod" "redis" {
 	}
 }
 
-# kubernetes_service for "redis" poad (type: NodePort)
+resource "kubernetes_service" "redis-port" {
+	metadata{
+		name = "redis-service"
+	}
 
-# kubernetes_pod "server"
+	spec {
+		selector = {
+			redis = "redis"
+		}
+		port{
+			port = 6379
+			target_port = 6379
+		}
+		type = "NodePort"
+	}
+}
 
-# kubernetes_service for "server" pod (type: LoadBalancer)
+data "google_container_registry_image" "server-image" {
+  name = "server"
+}
 
-# Now we should know ip of "server" service and build image for web
+resource "kubernetes_pod" "server" {
+  metadata {
+    name = "server"
+  }
+  spec {
+    container {
+      image = data.google_container_registry_image.server-image.image_url
+      name = "server"
+      port {
+        container_port = 5000
+      }
+    }
+  }
+}
 
-# kubernetes_pod "web"
+resource "kubernetes_service" "server-port" {
+  metadata {
+    name = "server"
+  }
+  spec {
+    selector = {
+      server = "server"
+    }
+    port {
+      port = 5000
+      target_port = 5000
+    }
+    type = "LoadBalancer"
+  }
+}
 
-# kubernetes_service for "web" pod (type: LoadBalancer)
+resource "kubernetes_ingress" "main-ingress" {
+  metadata {
+    name = "ingress"
+  }
+  spec {
+    backend {
+      service_name = "server-port"
+      service_port = 5000
+    }
+    rule{
+      http{
+        path {
+          backend {
+            service_name = "server-port"
+            service_port = 5000
+          }
+          path = "server/*"
+        }
+      }
+    }
+  }
+}
+
+output "ingress_ip" {
+  value = kubernetes_ingress.main-ingress.load_balancer_ingress
+}
